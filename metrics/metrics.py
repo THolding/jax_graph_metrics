@@ -15,6 +15,22 @@ import jax
 import jax.numpy as jnp
 
 
+#Plain numpy implementation
+def clustering_coefficient(adj, focalId):
+    focalNeighbours = np.where(adj[focalId,:]!=0)[0]
+    
+    Kv = len(focalNeighbours) #number of neighborus
+    
+    sharedNeighbourCounts = []
+    for neighbourId in focalNeighbours:
+        sharedNeighbourCounts.append(np.sum(np.logical_and(adj[focalId,:], adj[neighbourId,:])))
+    Nv = np.sum(sharedNeighbourCounts)
+    
+    cc = Nv / (Kv*(Kv-1)) #(2*Nv) / (Kv*(Kv-1))
+    return cc
+
+
+
 @jax.jit
 def jax_clustering_coefficient(adj, focalId):
     focalNeighbourMask = adj[focalId,:]
@@ -28,19 +44,6 @@ def jax_clustering_coefficient(adj, focalId):
     
     return cc
 
-
-def clustering_coefficient(adj, focalId):
-    focalNeighbours = np.where(adj[focalId,:]!=0)[0]
-    
-    Kv = len(focalNeighbours) #number of neighborus
-    
-    sharedNeighbourCounts = []
-    for neighbourId in focalNeighbours:
-        sharedNeighbourCounts.append(np.sum(np.logical_and(adj[focalId,:], adj[neighbourId,:])))
-    Nv = np.sum(sharedNeighbourCounts)
-    
-    cc = Nv / (Kv*(Kv-1)) #(2*Nv) / (Kv*(Kv-1))
-    return cc
 
 
 def average_clustering_coefficient(adj, clustering_func):
