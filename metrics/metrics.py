@@ -55,3 +55,104 @@ def average_clustering_coefficient(adj, clustering_func):
     
 
 
+
+
+
+
+
+@jax.jit
+def _jax_dijkstras_shortest_path_step(state):
+    (isFrontier, isOpen, shortestPathDists, nodeIds, parents, shortestPathCounts, closedOrder, weights, shortestPathCounts, shortestPaths, shortestPathLengths, iteration) = state
+    
+    
+    candidateCurrentNodeDistances = jnp.where(jnp.logical_and(isFrontier, isOpen), shortestPathDists, jnp.inf)
+    currentNode = jnp.sum(jnp.argmin(candidateCurrentNodeDistances) > nodeIds)
+    parentId = parents[currentNode]
+    
+    shortestPathCounts = shortestPathCounts.at[currentNode].set(shortestPathCounts[currentNode] + shortestPathCounts[parentId])  # count paths
+    closedOrder = closedOrder.at[iteration].set(currentNode)
+    
+    
+    #Calculate new distances to each neighbour
+    isCurrentNodeNeighbours = weights[currentNode, :] != jnp.inf
+    distSourceToCurrentNeighbours = weights[currentNode, :] + shortestPathDists[currentNode]
+    
+    
+    ##Updating for new equal length shortest paths. Note: this must happen before updating for any new shorter shortest paths because otherwise shortestPathDists is updated to distSourceToCurrentNeighbours already...
+    newPathIsEqual = jnp.logical_and(distSourceToCurrentNeighbours == shortestPathDists, shortestPathDists != jnp.inf)
+    shortestPathCounts = jnp.where(newPathIsEqual, shortestPathCounts+shortestPathCounts[currentNode], shortestPathCounts)
+    
+    rows = jnp.where(newPathIsEqual, nodeIds, shortestPaths.shape[0]) #Note: shortestPaths.shape[0] is always out of bounds and will be clipped
+    cols = jnp.where(newPathIsEqual, shortestPathLengths, shortestPaths.shape[1]) #Note: shortestPaths.shape[1] is always out of bounds and will be clipped
+    shortestPaths = shortestPaths.at[rows, cols].set(currentNode)
+    shortestPathLengths = jnp.where(newPathIsEqual, shortestPathLengths+1, shortestPathLengths)
+
+    ##Updating for new shortest paths
+    #Update currently known shortest path distances wherever we find new shortest distances
+    newPathIsShortest = distSourceToCurrentNeighbours < shortestPathDists
+    shortestPathDists = jnp.where(newPathIsShortest, distSourceToCurrentNeighbours, shortestPathDists)
+    parents = jnp.where(newPathIsShortest, currentNode, parents) #Update parents of any node's shortest distance that was just updated
+    shortestPathCounts = jnp.where(newPathIsShortest, 0, shortestPathCounts)
+    
+    rows = jnp.where(newPathIsShortest, nodeIds, shortestPaths.shape[0]) #Note: shortestPaths.shape[0] is always out of bounds and will be clipped
+    shortestPaths = shortestPaths.at[rows, 0].set(currentNode)
+    shortestPathLengths = jnp.where(newPathIsShortest, 1, shortestPathLengths)
+    
+    
+    ##Update frontier
+    isFrontier = isFrontier.at[currentNode].set(False) #Remove current node from the frontier
+    isFrontier = jnp.logical_and(jnp.logical_or(isFrontier, isCurrentNodeNeighbours), isOpen) #Add any nodes which are newly accessible, but not closed, to the frontier
+    
+    
+    isOpen = isOpen.at[currentNode].set(False)
+    iteration = iteration+1
+    
+    
+    
+    return isFrontier, isOpen, shortestPathDists, nodeIds, parents, shortestPathCounts, closedOrder, weights, shortestPathCounts, shortestPaths, shortestPathLengths, iteration
+
+
+
+@jax.jit
+def _jax_dijkstras_shortest_paths_cond_func(val):
+    return jnp.any(val[0]) #val[0] is the isFrontier array. Search must stop when there are no more nodes in the frontier. Note: this might be before all nodes are searched if it is not a fully connected graph
+
+
+
+@jax.jit
+def jax_dijkstra_shortest_paths(weights, sourceNode):
+    NULL_NODE = -1
+    nodeIds = jnp.arange(weights.shape[0])
+    
+    # modified from Eppstein
+    closedOrder = jnp.full(nodeIds.shape, NULL_NODE) #settles order (order in which the nodes were closed)
+    shortestPaths = jnp.full((nodeIds.shape[0], nodeIds.shape[0]), NULL_NODE)
+    shortestPathLengths = jnp.full(nodeIds.shape, 0)
+    
+    shortestPathDists = jnp.full(nodeIds.shape, np.inf)
+    shortestPathDists = shortestPathDists.at[sourceNode].set(0.0)
+    shortestPathCounts = jnp.full(nodeIds.shape, 0)
+    shortestPathCounts = shortestPathCounts.at[sourceNode].set(1)
+    
+    parents = jnp.full(nodeIds.shape, NULL_NODE)
+    parents = parents.at[sourceNode].set(sourceNode)
+    
+    isFrontier = jnp.full(nodeIds.shape, False)
+    isFrontier = isFrontier.at[sourceNode].set(True)
+    
+    isOpen = jnp.full(nodeIds.shape, True)
+    
+    iteration = jnp.array(0)
+    
+    
+    #Iteratively solve until the frontier is empty (maximum V iterations)
+    (isFrontier, isOpen, shortestPathDists, nodeIds, parents, shortestPathCounts, closedOrder,
+     weights, shortestPathCounts, shortestPaths, shortestPathLengths, iteration) = jax.lax.while_loop(_jax_dijkstras_shortest_paths_cond_func,
+                                                                                                      _jax_dijkstras_shortest_path_step,
+                                                                                                      (isFrontier, isOpen, shortestPathDists, nodeIds, parents, shortestPathCounts, closedOrder,
+                                                                                                       weights, shortestPathCounts, shortestPaths, shortestPathLengths, iteration)
+                                                                                                      )
+    
+    return closedOrder, shortestPaths, shortestPathLengths, shortestPathCounts, shortestPathDists #closedOrder is the order in which each node was closed (used in Brandes' algorithm), P is the paths taken, shortestPathCounts is the shortest path counts, D is distances
+
+
