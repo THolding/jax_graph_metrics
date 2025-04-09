@@ -90,8 +90,9 @@ if plotBenchmark:
     for i in range(len(labels)):
         #plt.plot(ns, np.log(times[i,:]), label=labels[i], linewidth=2)
         plt.plot(ns, times[i,:], label=labels[i], linewidth=2)
-    plt.ylabel("time (log seconds)")
+    plt.ylabel("time (seconds)")
     plt.xlabel("number of nodes")
+    plt.title("clustering coefficient")
     plt.legend(loc=0)
     plt.savefig(path.join(resultsDir, "clustering_coefficient_times.pdf"))
     plt.savefig(path.join(resultsDir, "clustering_coefficient_times.png"), dpi=400)
