@@ -156,3 +156,94 @@ def jax_dijkstra_shortest_paths(weights, sourceNode):
     return closedOrder, shortestPaths, shortestPathLengths, shortestPathCounts, shortestPathDists #closedOrder is the order in which each node was closed (used in Brandes' algorithm), P is the paths taken, shortestPathCounts is the shortest path counts, D is distances
 
 
+
+
+###########Untested: nx_accumulate_subset and nx_betweenness_centrality_subset
+def nx_accumulate_subset(betweenness, backPropgationOrder, shortestPaths, shortestPathCounts, sourceNode, destinations):
+    delta = dict.fromkeys(backPropgationOrder, 0.0)
+    destinations = set(destinations) - {sourceNode}
+    while len(backPropgationOrder) > 0:
+        currentNode = backPropgationOrder.pop()
+        if currentNode in destinations:
+            coeff = (delta[currentNode] + 1.0) / shortestPathCounts[currentNode]
+        else:
+            coeff = delta[currentNode] / shortestPathCounts[currentNode]
+        for nodeInPath in shortestPaths[currentNode]:
+            delta[nodeInPath] += shortestPathCounts[nodeInPath] * coeff
+        if currentNode != sourceNode:
+            betweenness[currentNode] += delta[currentNode]
+    return betweenness
+
+
+sources = [0]
+destinations = [2]
+
+def nx_betweenness_centrality_subset(weights, sources, destinations, directed):
+    betweenness = np.full(weights.shape[0], 0.0)
+    for source in sources:
+        closeOrder, shortestPaths, shortestPathCounts, _ = nx_single_source_dijkstra_path_basic(weights, source)
+        betweenness = nx_accumulate_subset(betweenness, closeOrder, shortestPaths, shortestPathCounts, source, destinations)
+    
+    if directed:
+        betweenness /= 2
+    return betweenness
+
+
+
+np.random.seed(0)
+N = 5#10#50#5
+p = 0.75#0.65#0.45#0.75
+nxGraph = nx.gnp_random_graph(N, p, directed=True, seed=2)
+for (sourceId, destId) in nxGraph.edges():
+    nxGraph[sourceId][destId]["weight"] = np.round(np.random.uniform(0.1, 6.0), 5)
+nodeIds = np.arange(len(nxGraph))
+
+#overwrite some weights to make two shortest distance paths
+nxGraph[0][4]["weight"] = 1.5
+nxGraph[4][1]["weight"] = 2.5
+nxGraph[0][3]["weight"] = 1.5
+nxGraph[3][1]["weight"] = 2.5
+
+edgeLabels = {}
+for (sourceId, destId) in nxGraph.edges():
+    label = str((sourceId, destId))+"="+str(nxGraph[sourceId][destId]["weight"])
+    if nxGraph.has_edge(destId, sourceId):
+        label += "\n"+str((destId, sourceId))+"="+str(nxGraph[destId][sourceId]["weight"])
+    edgeLabels[(sourceId, destId)] = label
+    
+
+pos = nx.spring_layout(nxGraph)
+plt.figure()
+nx.draw(nxGraph, pos, with_labels=True, node_size=500, arrows=True)
+nx.draw_networkx_edge_labels(nxGraph, pos, edge_labels=edgeLabels)
+
+weights = nx.to_numpy_array(nxGraph, weight='weight')
+weights[weights==0] = np.inf
+
+deviceWeights = jnp.array(weights)
+
+
+sourceNode = nodeIds[0]
+
+
+
+jax_dijkstra_shortest_paths(deviceWeights, sourceNode)
+
+
+###################
+
+
+
+# nxBetweennewssCentrality = nx.betweenness_centrality_subset(nxGraph, [0], [1], weight="weight")
+# nxBetweennewssCentrality = [nxBetweennewssCentrality[i] for i in nodeIds]
+
+
+
+
+
+
+
+
+
+
+
