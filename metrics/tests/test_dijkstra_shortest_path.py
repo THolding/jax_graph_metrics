@@ -14,6 +14,7 @@ if projectRootPath not in sys.path:
 import pytest
 import networkx as nx
 import numpy as np
+import jax
 import jax.numpy as jnp
 import networkx.algorithms.centrality.betweenness as nxbetweenness
 
@@ -75,4 +76,6 @@ def test_clustering_coefficient():
         
 
 if __name__ == "__main__":
+    jax.config.update("jax_enable_x64", True) #64 bit precision
+    
     pytest.main()

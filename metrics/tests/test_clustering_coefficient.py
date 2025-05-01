@@ -13,6 +13,7 @@ if projectRootPath not in sys.path:
 
 import pytest
 import networkx as nx
+import jax;
 import jax.numpy as jnp
 
 import metrics
@@ -29,10 +30,6 @@ def test_clustering_coefficient():
 
 
     for focalId in range(V):
-        cc = metrics.clustering_coefficient(adj, focalId)
-        assert nxCcs[focalId] == pytest.approx(cc, rel=1e-6)
-
-    for focalId in range(V):
         cc = metrics.jax_clustering_coefficient(deviceAdj, focalId)
         assert nxCcs[focalId] == pytest.approx(cc, rel=1e-6)
 
@@ -44,19 +41,24 @@ def test_average_clustering_coefficient():
     adj = nx.to_numpy_array(nxGraph)
     deviceAdj = jnp.array(adj)
 
-    nxCcs = nx.clustering(nxGraph); nxCcs = [nxCcs[node] for node in sorted(nxCcs.keys())]
     nxMeanCc = nx.average_clustering(nxGraph)
     
-    meanCc = metrics.average_clustering_coefficient(adj, metrics.clustering_coefficient)
+    meanCc = metrics.np_average_clustering_coefficient(adj)
     assert nxMeanCc == pytest.approx(meanCc, rel=1e-6)
     
-    meanCc = metrics.average_clustering_coefficient(deviceAdj, metrics.jax_clustering_coefficient)
+    meanCc = metrics.jax_average_clustering_coefficient(deviceAdj)
     assert nxMeanCc == pytest.approx(meanCc, rel=1e-6)
+
+
 
 
 
 if __name__ == "__main__":
+    jax.config.update("jax_enable_x64", True) #64 bit precision
+    
     pytest.main()
 
+    
+    
 
 

@@ -16,7 +16,7 @@ import jax.numpy as jnp
 
 
 #Plain numpy implementation
-def clustering_coefficient(adj, focalId):
+def np_clustering_coefficient(adj, focalId):
     focalNeighbours = np.where(adj[focalId,:]!=0)[0]
     
     Kv = len(focalNeighbours) #number of neighborus
@@ -31,28 +31,41 @@ def clustering_coefficient(adj, focalId):
 
 
 
+#Returns the clustering coefficient for a single node on a network
+#Supports directed and undirected graphs with no weighted edges
+#adj: the adjacency matrix for the network, where 0 indicates no edge, 1 indicates an edge between the row-indexed to the column-indexed node
+#focalId: index of the node to calculate the clustering coefficient for
 @jax.jit
 def jax_clustering_coefficient(adj, focalId):
-    focalNeighbourMask = adj[focalId,:]
-    focalNeighbourCount = jnp.sum(focalNeighbourMask)
+    focalNeighbourMask = adj[focalId,:] #identify neighbours
+    focalNeighbourCount = jnp.sum(focalNeighbourMask) #number of neighbours
     
-    sharedNeighbours = jnp.logical_and(adj, focalNeighbourMask)
+    sharedNeighbours = jnp.logical_and(adj, focalNeighbourMask) #Boolean array indicating which neighbour nodes share another neighbour with the focal node
     sharedNeighbourCounts = jnp.where(focalNeighbourMask,
                                       jnp.sum(sharedNeighbours, axis=1),
                                       0)
+    #Sum the number of shared other-neighbours for each neighbour
     cc = jnp.sum(sharedNeighbourCounts) / (focalNeighbourCount*(focalNeighbourCount-1))
     
     return cc
 
 
 
-def average_clustering_coefficient(adj, clustering_func):
+def np_average_clustering_coefficient(adj):
     N = adj.shape[0]
-    meanCc = 0.0
-    for focalId in range(N):
-        meanCc += clustering_func(adj, focalId)
-    return meanCc / N
+    nodeIds = np.arange(N)
+    #meanCc = 0.0
+    nodeCCs = np.vectorize(np_clustering_coefficient, excluded=[0])(adj, nodeIds)
+    # for focalId in range(N):
+    #     meanCc += clustering_coefficient(adj, focalId)
+    return np.sum(nodeCCs) / N
     
+
+@jax.jit
+def jax_average_clustering_coefficient(adj):
+    nodeIds = jnp.arange(adj.shape[0])
+    nodeCCs = jax.vmap(jax_clustering_coefficient, (None, 0))(adj, nodeIds)
+    return jnp.sum(nodeCCs) / nodeIds.shape[0]
 
 
 
@@ -158,51 +171,151 @@ def jax_dijkstra_shortest_paths(weights, sourceNode):
 
 
 
-###########Untested: nx_accumulate_subset and nx_betweenness_centrality_subset
-def nx_accumulate_subset(betweenness, backPropgationOrder, shortestPaths, shortestPathCounts, sourceNode, destinations):
-    delta = dict.fromkeys(backPropgationOrder, 0.0)
-    destinations = set(destinations) - {sourceNode}
-    while len(backPropgationOrder) > 0:
-        currentNode = backPropgationOrder.pop()
-        if currentNode in destinations:
-            coeff = (delta[currentNode] + 1.0) / shortestPathCounts[currentNode]
-        else:
-            coeff = delta[currentNode] / shortestPathCounts[currentNode]
-        for nodeInPath in shortestPaths[currentNode]:
-            delta[nodeInPath] += shortestPathCounts[nodeInPath] * coeff
-        if currentNode != sourceNode:
-            betweenness[currentNode] += delta[currentNode]
+
+@jax.jit
+def _jax_accumulate_subset_cond_func(state):
+    backPropagationIdx = state[0]
+    return backPropagationIdx[0] >= 0
+
+
+@jax.jit
+def _jax_accumulate_subset_step(state):
+    (backPropagationIdx, betweenness, backPropagationOrder, shortestPaths, shortestPathCounts, sourceNode, destinations, dependencyScores, NULL_NODE) = state
+    
+    #If we're in the buffered part of the array, just move on to the next element
+    currentNode = backPropagationOrder[backPropagationIdx]
+    
+    dummyNotNull = int(currentNode.at[0] != NULL_NODE.at[0])
+    
+    #Calculate coefficient
+    coeff = dependencyScores[currentNode]
+    coeff = coeff + jnp.array(destinations[currentNode], dtype=int) #Add 1 to numerator if current node is a destination
+    coeff = coeff / shortestPathCounts[currentNode]
+    coeff = coeff * dummyNotNull #multiplying by dummyNotNull results in the function making no changes (effectively skipping to the next loop iteration). #TODO: use jax.jax.cond instead?
+    # jax.debug.print("coeff4: {0} {1}", currentNode, coeff)
+    
+    #Update dependency scores
+    nodesInPath = shortestPaths[currentNode].squeeze()
+    unorderedPathCounts = jnp.where(nodesInPath != NULL_NODE, shortestPathCounts[nodesInPath], 0)
+    pathCounts = jnp.zeros(unorderedPathCounts.shape)
+    pathCounts = pathCounts.at[nodesInPath].set(unorderedPathCounts)
+    # jax.debug.print("pathCounts: {0} {1}", currentNode, pathCounts)
+    newDependencyContributions = pathCounts * coeff
+    # jax.debug.print("newDependencyContributions: {0} {1}", currentNode, newDependencyContributions)
+    # jax.debug.print("dependencyScores before: {0} {1}", currentNode, dependencyScores)
+    dependencyScores = dependencyScores + newDependencyContributions
+    # jax.debug.print("dependencyScores after: {0} {1}", currentNode, dependencyScores)
+
+    
+    #Avoid if conditional by using a dummy scalar
+    dummy = currentNode != sourceNode
+    betweenness = betweenness.at[currentNode].set(betweenness[currentNode] + (dummy*dependencyScores[currentNode]))
+    
+    backPropagationIdx = backPropagationIdx - 1
+    
+    return backPropagationIdx, betweenness, backPropagationOrder, shortestPaths, shortestPathCounts, sourceNode, destinations, dependencyScores, NULL_NODE
+
+
+
+#The back propagation step in Brandes' algorithm
+#destinations: a jnp.array boolean mask with a length of V (number of vertices in whole graph), where True indicates a destination node.
+@jax.jit
+def jax_accumulate_subset(betweenness, backPropagationOrder, shortestPaths, shortestPathCounts, sourceNode, destinations):
+    NULL_NODE = -1
+    dependencyScores = jnp.full(backPropagationOrder.shape, 0.0)
+    
+    destinations = destinations.at[sourceNode].set(False) #source cannot be a destination
+    backPropagationIdx = jnp.array([backPropagationOrder.shape[0]-1])
+    
+    
+    state = jax.lax.while_loop(_jax_accumulate_subset_cond_func,
+                               _jax_accumulate_subset_step,
+                               (backPropagationIdx, betweenness, backPropagationOrder, shortestPaths, shortestPathCounts, sourceNode, destinations, dependencyScores, NULL_NODE)
+                              )
+    
+    betweenness = state[1]
+    
     return betweenness
 
 
-sources = [0]
-destinations = [2]
 
-def nx_betweenness_centrality_subset(weights, sources, destinations, directed):
-    betweenness = np.full(weights.shape[0], 0.0)
-    for source in sources:
-        closeOrder, shortestPaths, shortestPathCounts, _ = nx_single_source_dijkstra_path_basic(weights, source)
-        betweenness = nx_accumulate_subset(betweenness, closeOrder, shortestPaths, shortestPathCounts, source, destinations)
+
+
+
+#The internal function used in while loop in jax_betweeness_centrality_subset
+@jax.jit
+def _jax_betweenness_centrality_subset_step(state):
+    (sourceIdx, weights, sources, destinations, betweenness) = state
     
-    if directed:
+    source = sources[sourceIdx]
+    
+    closeOrder, shortestPaths, shortestPathLengths, shortestPathCounts, _ = jax_dijkstra_shortest_paths(weights, source)
+    betweenness = jax_accumulate_subset(betweenness, closeOrder, shortestPaths, shortestPathCounts, source, destinations)
+    
+    sourceIdx = jnp.array(sourceIdx - 1)
+    return (sourceIdx, weights, sources, destinations, betweenness)
+
+@jax.jit
+def _jax_betweenness_centrality_subset_cond_func(state):
+    sourceIdx = state[0]
+    return sourceIdx >= 0
+    
+#An implementaton of Brandes' agorithm
+#destinations: a jnp.array boolean mask with a length of V (number of vertices in whole graph), where True indicates a destination node.
+def jax_betweenness_centrality_subset(weights, sources, destinations, directed):
+    nodeIds = jnp.arange(weights.shape[0])
+    sourceIdx = jnp.array(len(sources)-1) #Start indexing from the right
+    
+    #create a buffered sources array so that different sized arrays don't force recompilation
+    bufferedSources = jnp.where(nodeIds <= sourceIdx,
+                                jnp.array(sources),
+                                -1)
+    
+    betweenness = jnp.full(weights.shape[0], 0.0)
+    
+    state = jax.lax.while_loop(_jax_betweenness_centrality_subset_cond_func,
+                               _jax_betweenness_centrality_subset_step,
+                               (sourceIdx, weights, bufferedSources, destinations, betweenness))
+    betweenness = state[-1]
+
+    
+    if directed == False:
+        betweenness /= 2
+    return betweenness
+
+
+#An implementaton of Brandes' agorithm
+#destinations: a jnp.array boolean mask with a length of V (number of vertices in whole graph), where True indicates a destination node.
+def jax_betweenness_centrality_subset0(weights, sources, destinations, directed):
+    nodeIds = jnp.arange(weights.shape[0])
+    
+    betweenness = jnp.full(weights.shape[0], 0.0)
+    
+    for source in sources:
+        closeOrder, shortestPaths, shortestPathLengths, shortestPathCounts, _ = jax_dijkstra_shortest_paths(weights, source)
+        betweenness = jax_accumulate_subset(betweenness, closeOrder, shortestPaths, shortestPathCounts, source, destinations)
+
+    
+    if directed == False:
         betweenness /= 2
     return betweenness
 
 
 
+
 np.random.seed(0)
-N = 5#10#50#5
-p = 0.75#0.65#0.45#0.75
+N = 20#10#50#5
+p = 0.25#0.65#0.45#0.75
 nxGraph = nx.gnp_random_graph(N, p, directed=True, seed=2)
 for (sourceId, destId) in nxGraph.edges():
     nxGraph[sourceId][destId]["weight"] = np.round(np.random.uniform(0.1, 6.0), 5)
 nodeIds = np.arange(len(nxGraph))
 
 #overwrite some weights to make two shortest distance paths
-nxGraph[0][4]["weight"] = 1.5
-nxGraph[4][1]["weight"] = 2.5
-nxGraph[0][3]["weight"] = 1.5
-nxGraph[3][1]["weight"] = 2.5
+# nxGraph[0][4]["weight"] = 1.5
+# nxGraph[4][1]["weight"] = 2.5
+# nxGraph[0][3]["weight"] = 1.5
+# nxGraph[3][1]["weight"] = 2.5
 
 edgeLabels = {}
 for (sourceId, destId) in nxGraph.edges():
@@ -217,25 +330,54 @@ plt.figure()
 nx.draw(nxGraph, pos, with_labels=True, node_size=500, arrows=True)
 nx.draw_networkx_edge_labels(nxGraph, pos, edge_labels=edgeLabels)
 
+
 weights = nx.to_numpy_array(nxGraph, weight='weight')
 weights[weights==0] = np.inf
-
 deviceWeights = jnp.array(weights)
 
 
-sourceNode = nodeIds[0]
+source = 0
+destinations = [nodeId for nodeId in nodeIds] #[2]
+
+destinationsJax = jnp.full(nodeIds.shape, False)
+for dest in destinations:
+    destinationsJax = destinationsJax.at[dest].set(True)
 
 
 
-jax_dijkstra_shortest_paths(deviceWeights, sourceNode)
+
+#### Testing accumulate_subset
+S, P, sigma, _ = nx.algorithms.centrality.betweenness._single_source_dijkstra_path_basic(nxGraph, source, "weight")
+b = dict.fromkeys(nxGraph, 0.0) 
+nxBCS = nx.algorithms.centrality.betweenness_subset._accumulate_subset(b, S, P, sigma, source, destinations)
+nxBCS = [nxBCS[i] for i in nodeIds]
+
+closeOrder, shortestPaths, shortestPathLengths, shortestPathCounts, _ = jax_dijkstra_shortest_paths(deviceWeights, source)
+b = jnp.full(weights.shape[0], 0.0)
+jaxBCS = jax_accumulate_subset(b, closeOrder, shortestPaths, shortestPathCounts, jnp.array([source]), destinationsJax)
+
+print("ID, nx, jax")
+for i in range(len(nxBCS)):
+    print(i, nxBCS[i], jaxBCS[i])
+    if nxBCS[i] != jaxBCS[i]:
+        print("################# MISMATCH")
 
 
-###################
 
 
+#### Testing betweenness_centrality_subset
+nxBCS = nx.betweenness_centrality_subset(nxGraph, [source], destinations, weight="weight", normalized=False)
+nxBCS = [nxBCS[i] for i in nodeIds]
 
-# nxBetweennewssCentrality = nx.betweenness_centrality_subset(nxGraph, [0], [1], weight="weight")
-# nxBetweennewssCentrality = [nxBetweennewssCentrality[i] for i in nodeIds]
+
+jaxBCS = jax_betweenness_centrality_subset(deviceWeights, [source], destinationsJax, directed=True)
+
+print("\n\nID, nx, jax")
+for i in range(len(nxBCS)):
+    print(i, nxBCS[i], jaxBCS[i])
+    if nxBCS[i] != jaxBCS[i]:
+        print("################# MISMATCH")
+
 
 
 
