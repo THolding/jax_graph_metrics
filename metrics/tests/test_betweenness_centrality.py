@@ -44,16 +44,16 @@ def test_average_clustering_coefficient():
     assert len(nxBCS) == len(jaxBCS)
 
     for i in range(len(nxBCS)):
-        if nxBCS[i] != pytest.approx(jaxBCS[i], rel=1e-6):
-            print(i, nxBCS[i], jaxBCS[i])
-        #assert nxBCS[i] == pytest.approx(jaxBCS[i], rel=1e-6)
+        # if nxBCS[i] != pytest.approx(jaxBCS[i], rel=1e-6):
+        #     print(i, nxBCS[i], jaxBCS[i])
+        assert nxBCS[i] == pytest.approx(jaxBCS[i], rel=1e-6)
 
 
 
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True) #64 bit precision
     
-    test_average_clustering_coefficient()
-    #pytest.main()
+    #test_average_clustering_coefficient()
+    pytest.main()
 
 
