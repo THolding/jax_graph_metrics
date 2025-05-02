@@ -262,6 +262,7 @@ def _jax_betweenness_centrality_subset_cond_func(state):
     
 #An implementaton of Brandes' agorithm
 #destinations: a jnp.array boolean mask with a length of V (number of vertices in whole graph), where True indicates a destination node.
+#This is a non-jax function which calls jax functions to do the heavy lifting
 def jax_betweenness_centrality_subset(weights, sources, destinations, directed):
     nodeIds = jnp.arange(weights.shape[0])
     sourceIdx = jnp.array(len(sources)-1) #Start indexing from the right
@@ -284,99 +285,86 @@ def jax_betweenness_centrality_subset(weights, sources, destinations, directed):
     return betweenness
 
 
-#An implementaton of Brandes' agorithm
-#destinations: a jnp.array boolean mask with a length of V (number of vertices in whole graph), where True indicates a destination node.
-def jax_betweenness_centrality_subset0(weights, sources, destinations, directed):
-    nodeIds = jnp.arange(weights.shape[0])
+
+
+
+
+### Temporary development code
+if __name__ == "__main__":
+    np.random.seed(0)
+    N = 20#10#50#5  #E.G. set N=10 and betweenness centrality fails fails
+    p = 0.25#0.65#0.45#0.75
+    nxGraph = nx.gnp_random_graph(N, p, directed=True, seed=2)
+    for (sourceId, destId) in nxGraph.edges():
+        nxGraph[sourceId][destId]["weight"] = np.round(np.random.uniform(0.1, 6.0), 5)
+    nodeIds = np.arange(len(nxGraph))
     
-    betweenness = jnp.full(weights.shape[0], 0.0)
+    #overwrite some weights to make two shortest distance paths
+    # nxGraph[0][4]["weight"] = 1.5
+    # nxGraph[4][1]["weight"] = 2.5
+    # nxGraph[0][3]["weight"] = 1.5
+    # nxGraph[3][1]["weight"] = 2.5
     
-    for source in sources:
-        closeOrder, shortestPaths, shortestPathLengths, shortestPathCounts, _ = jax_dijkstra_shortest_paths(weights, source)
-        betweenness = jax_accumulate_subset(betweenness, closeOrder, shortestPaths, shortestPathCounts, source, destinations)
-
+    edgeLabels = {}
+    for (sourceId, destId) in nxGraph.edges():
+        label = str((sourceId, destId))+"="+str(nxGraph[sourceId][destId]["weight"])
+        if nxGraph.has_edge(destId, sourceId):
+            label += "\n"+str((destId, sourceId))+"="+str(nxGraph[destId][sourceId]["weight"])
+        edgeLabels[(sourceId, destId)] = label
+        
     
-    if directed == False:
-        betweenness /= 2
-    return betweenness
-
-
-
-
-np.random.seed(0)
-N = 20#10#50#5
-p = 0.25#0.65#0.45#0.75
-nxGraph = nx.gnp_random_graph(N, p, directed=True, seed=2)
-for (sourceId, destId) in nxGraph.edges():
-    nxGraph[sourceId][destId]["weight"] = np.round(np.random.uniform(0.1, 6.0), 5)
-nodeIds = np.arange(len(nxGraph))
-
-#overwrite some weights to make two shortest distance paths
-# nxGraph[0][4]["weight"] = 1.5
-# nxGraph[4][1]["weight"] = 2.5
-# nxGraph[0][3]["weight"] = 1.5
-# nxGraph[3][1]["weight"] = 2.5
-
-edgeLabels = {}
-for (sourceId, destId) in nxGraph.edges():
-    label = str((sourceId, destId))+"="+str(nxGraph[sourceId][destId]["weight"])
-    if nxGraph.has_edge(destId, sourceId):
-        label += "\n"+str((destId, sourceId))+"="+str(nxGraph[destId][sourceId]["weight"])
-    edgeLabels[(sourceId, destId)] = label
+    pos = nx.spring_layout(nxGraph)
+    plt.figure()
+    nx.draw(nxGraph, pos, with_labels=True, node_size=500, arrows=True)
+    nx.draw_networkx_edge_labels(nxGraph, pos, edge_labels=edgeLabels)
     
-
-pos = nx.spring_layout(nxGraph)
-plt.figure()
-nx.draw(nxGraph, pos, with_labels=True, node_size=500, arrows=True)
-nx.draw_networkx_edge_labels(nxGraph, pos, edge_labels=edgeLabels)
-
-
-weights = nx.to_numpy_array(nxGraph, weight='weight')
-weights[weights==0] = np.inf
-deviceWeights = jnp.array(weights)
-
-
-source = 0
-destinations = [nodeId for nodeId in nodeIds] #[2]
-
-destinationsJax = jnp.full(nodeIds.shape, False)
-for dest in destinations:
-    destinationsJax = destinationsJax.at[dest].set(True)
-
-
-
-
-#### Testing accumulate_subset
-S, P, sigma, _ = nx.algorithms.centrality.betweenness._single_source_dijkstra_path_basic(nxGraph, source, "weight")
-b = dict.fromkeys(nxGraph, 0.0) 
-nxBCS = nx.algorithms.centrality.betweenness_subset._accumulate_subset(b, S, P, sigma, source, destinations)
-nxBCS = [nxBCS[i] for i in nodeIds]
-
-closeOrder, shortestPaths, shortestPathLengths, shortestPathCounts, _ = jax_dijkstra_shortest_paths(deviceWeights, source)
-b = jnp.full(weights.shape[0], 0.0)
-jaxBCS = jax_accumulate_subset(b, closeOrder, shortestPaths, shortestPathCounts, jnp.array([source]), destinationsJax)
-
-print("ID, nx, jax")
-for i in range(len(nxBCS)):
-    print(i, nxBCS[i], jaxBCS[i])
-    if nxBCS[i] != jaxBCS[i]:
-        print("################# MISMATCH")
-
-
-
-
-#### Testing betweenness_centrality_subset
-nxBCS = nx.betweenness_centrality_subset(nxGraph, [source], destinations, weight="weight", normalized=False)
-nxBCS = [nxBCS[i] for i in nodeIds]
-
-
-jaxBCS = jax_betweenness_centrality_subset(deviceWeights, [source], destinationsJax, directed=True)
-
-print("\n\nID, nx, jax")
-for i in range(len(nxBCS)):
-    print(i, nxBCS[i], jaxBCS[i])
-    if nxBCS[i] != jaxBCS[i]:
-        print("################# MISMATCH")
+    
+    weights = nx.to_numpy_array(nxGraph, weight='weight')
+    weights[weights==0] = np.inf
+    deviceWeights = jnp.array(weights)
+    
+    
+    source = 0
+    destinations = [nodeId for nodeId in nodeIds] #[2]
+    
+    destinationsJax = jnp.full(nodeIds.shape, False)
+    for dest in destinations:
+        destinationsJax = destinationsJax.at[dest].set(True)
+    
+    
+    
+    
+    #### Testing accumulate_subset
+    S, P, sigma, _ = nx.algorithms.centrality.betweenness._single_source_dijkstra_path_basic(nxGraph, source, "weight")
+    b = dict.fromkeys(nxGraph, 0.0) 
+    nxBCS = nx.algorithms.centrality.betweenness_subset._accumulate_subset(b, S, P, sigma, source, destinations)
+    nxBCS = [nxBCS[i] for i in nodeIds]
+    
+    closeOrder, shortestPaths, shortestPathLengths, shortestPathCounts, _ = jax_dijkstra_shortest_paths(deviceWeights, source)
+    b = jnp.full(weights.shape[0], 0.0)
+    jaxBCS = jax_accumulate_subset(b, closeOrder, shortestPaths, shortestPathCounts, jnp.array([source]), destinationsJax)
+    
+    print("ID, nx, jax")
+    for i in range(len(nxBCS)):
+        print(i, nxBCS[i], jaxBCS[i])
+        if nxBCS[i] != jaxBCS[i]:
+            print("################# MISMATCH")
+    
+    
+    
+    
+    #### Testing betweenness_centrality_subset
+    nxBCS = nx.betweenness_centrality_subset(nxGraph, [source], destinations, weight="weight", normalized=False)
+    nxBCS = [nxBCS[i] for i in nodeIds]
+    
+    
+    jaxBCS = jax_betweenness_centrality_subset(deviceWeights, [source], destinationsJax, directed=True)
+    
+    print("\n\nID, nx, jax")
+    for i in range(len(nxBCS)):
+        print(i, nxBCS[i], jaxBCS[i])
+        if nxBCS[i] != jaxBCS[i]:
+            print("################# MISMATCH")
 
 
 

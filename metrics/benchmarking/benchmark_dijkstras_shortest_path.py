@@ -24,7 +24,7 @@ runBenchmark = True
 plotBenchmark = True
 
 resultsDir = path.join("results")
-ns = [10, 25, 50, 100, 250, 500, 750, 1000, 1500, 2000, 2500] #network sizes to use
+ns = [10, 25, 50, 100, 250, 500, 750, 1000] #network sizes to use
 p = 0.5 #probability of edge
 numReps = 3 #number of repeats for each network size
 
@@ -51,7 +51,7 @@ if runBenchmark:
         deviceWeights = jnp.array(weights)
         
         #networkx
-        if N <= 1000: #Larger networks take too long
+        if N <= 750: #Larger networks take too long
             print("\tnetworkx")
             repTimes = []
             for irep in range(numReps):
