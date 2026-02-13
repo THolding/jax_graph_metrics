@@ -26,7 +26,7 @@ def np_clustering_coefficient(adj, focalId):
         sharedNeighbourCounts.append(np.sum(np.logical_and(adj[focalId,:], adj[neighbourId,:])))
     Nv = np.sum(sharedNeighbourCounts)
     
-    cc = Nv / (Kv*(Kv-1)) #(2*Nv) / (Kv*(Kv-1))
+    cc = Nv / (Kv*(Kv-1))
     return cc
 
 
@@ -50,17 +50,15 @@ def jax_clustering_coefficient(adj, focalId):
     return cc
 
 
-
+#Returns the mean clustering coefficient for a network
 def np_average_clustering_coefficient(adj):
     N = adj.shape[0]
     nodeIds = np.arange(N)
-    #meanCc = 0.0
     nodeCCs = np.vectorize(np_clustering_coefficient, excluded=[0])(adj, nodeIds)
-    # for focalId in range(N):
-    #     meanCc += clustering_coefficient(adj, focalId)
     return np.sum(nodeCCs) / N
     
 
+#Returns the mean clustering coefficient for a network
 @jax.jit
 def jax_average_clustering_coefficient(adj):
     nodeIds = jnp.arange(adj.shape[0])
@@ -119,8 +117,6 @@ def _jax_dijkstras_shortest_path_step(state):
     
     isOpen = isOpen.at[currentNode].set(False)
     iteration = iteration+1
-    
-    
     
     return isFrontier, isOpen, shortestPathDists, nodeIds, parents, shortestPathCounts, closedOrder, weights, shortestPathCounts, shortestPaths, shortestPathLengths, iteration
 
@@ -192,19 +188,14 @@ def _jax_accumulate_subset_step(state):
     coeff = coeff + jnp.array(destinations[currentNode], dtype=int) #Add 1 to numerator if current node is a destination
     coeff = coeff / shortestPathCounts[currentNode]
     coeff = coeff * dummyNotNull #multiplying by dummyNotNull results in the function making no changes (effectively skipping to the next loop iteration). #TODO: use jax.jax.cond instead?
-    # jax.debug.print("coeff4: {0} {1}", currentNode, coeff)
     
     #Update dependency scores
     nodesInPath = shortestPaths[currentNode].squeeze()
     unorderedPathCounts = jnp.where(nodesInPath != NULL_NODE, shortestPathCounts[nodesInPath], 0)
     pathCounts = jnp.zeros(unorderedPathCounts.shape)
     pathCounts = pathCounts.at[nodesInPath].set(unorderedPathCounts)
-    # jax.debug.print("pathCounts: {0} {1}", currentNode, pathCounts)
     newDependencyContributions = pathCounts * coeff
-    # jax.debug.print("newDependencyContributions: {0} {1}", currentNode, newDependencyContributions)
-    # jax.debug.print("dependencyScores before: {0} {1}", currentNode, dependencyScores)
     dependencyScores = dependencyScores + newDependencyContributions
-    # jax.debug.print("dependencyScores after: {0} {1}", currentNode, dependencyScores)
 
     
     #Avoid if conditional by using a dummy scalar
@@ -283,97 +274,3 @@ def jax_betweenness_centrality_subset(weights, sources, destinations, directed):
     if directed == False:
         betweenness /= 2
     return betweenness
-
-
-
-
-
-
-### Temporary development code
-if __name__ == "__main__":
-    np.random.seed(0)
-    N = 20#10#50#5  #E.G. set N=10 and betweenness centrality fails fails
-    p = 0.25#0.65#0.45#0.75
-    nxGraph = nx.gnp_random_graph(N, p, directed=True, seed=2)
-    for (sourceId, destId) in nxGraph.edges():
-        nxGraph[sourceId][destId]["weight"] = np.round(np.random.uniform(0.1, 6.0), 5)
-    nodeIds = np.arange(len(nxGraph))
-    
-    #overwrite some weights to make two shortest distance paths
-    # nxGraph[0][4]["weight"] = 1.5
-    # nxGraph[4][1]["weight"] = 2.5
-    # nxGraph[0][3]["weight"] = 1.5
-    # nxGraph[3][1]["weight"] = 2.5
-    
-    edgeLabels = {}
-    for (sourceId, destId) in nxGraph.edges():
-        label = str((sourceId, destId))+"="+str(nxGraph[sourceId][destId]["weight"])
-        if nxGraph.has_edge(destId, sourceId):
-            label += "\n"+str((destId, sourceId))+"="+str(nxGraph[destId][sourceId]["weight"])
-        edgeLabels[(sourceId, destId)] = label
-        
-    
-    pos = nx.spring_layout(nxGraph)
-    plt.figure()
-    nx.draw(nxGraph, pos, with_labels=True, node_size=500, arrows=True)
-    nx.draw_networkx_edge_labels(nxGraph, pos, edge_labels=edgeLabels)
-    
-    
-    weights = nx.to_numpy_array(nxGraph, weight='weight')
-    weights[weights==0] = np.inf
-    deviceWeights = jnp.array(weights)
-    
-    
-    source = 0
-    destinations = [nodeId for nodeId in nodeIds] #[2]
-    
-    destinationsJax = jnp.full(nodeIds.shape, False)
-    for dest in destinations:
-        destinationsJax = destinationsJax.at[dest].set(True)
-    
-    
-    
-    
-    #### Testing accumulate_subset
-    S, P, sigma, _ = nx.algorithms.centrality.betweenness._single_source_dijkstra_path_basic(nxGraph, source, "weight")
-    b = dict.fromkeys(nxGraph, 0.0) 
-    nxBCS = nx.algorithms.centrality.betweenness_subset._accumulate_subset(b, S, P, sigma, source, destinations)
-    nxBCS = [nxBCS[i] for i in nodeIds]
-    
-    closeOrder, shortestPaths, shortestPathLengths, shortestPathCounts, _ = jax_dijkstra_shortest_paths(deviceWeights, source)
-    b = jnp.full(weights.shape[0], 0.0)
-    jaxBCS = jax_accumulate_subset(b, closeOrder, shortestPaths, shortestPathCounts, jnp.array([source]), destinationsJax)
-    
-    print("ID, nx, jax")
-    for i in range(len(nxBCS)):
-        print(i, nxBCS[i], jaxBCS[i])
-        if nxBCS[i] != jaxBCS[i]:
-            print("################# MISMATCH")
-    
-    
-    
-    
-    #### Testing betweenness_centrality_subset
-    nxBCS = nx.betweenness_centrality_subset(nxGraph, [source], destinations, weight="weight", normalized=False)
-    nxBCS = [nxBCS[i] for i in nodeIds]
-    
-    
-    jaxBCS = jax_betweenness_centrality_subset(deviceWeights, [source], destinationsJax, directed=True)
-    
-    print("\n\nID, nx, jax")
-    for i in range(len(nxBCS)):
-        print(i, nxBCS[i], jaxBCS[i])
-        if nxBCS[i] != jaxBCS[i]:
-            print("################# MISMATCH")
-
-
-
-
-
-
-
-
-
-
-
-

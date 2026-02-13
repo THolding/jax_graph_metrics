@@ -44,8 +44,6 @@ def test_average_clustering_coefficient():
     assert len(nxBCS) == len(jaxBCS)
 
     for i in range(len(nxBCS)):
-        # if nxBCS[i] != pytest.approx(jaxBCS[i], rel=1e-6):
-        #     print(i, nxBCS[i], jaxBCS[i])
         assert nxBCS[i] == pytest.approx(jaxBCS[i], rel=1e-6)
 
 
